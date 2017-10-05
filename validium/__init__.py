@@ -1,2 +1,2 @@
-from .model import page, view, views, node, nodes
-from .server import driver, browser
+from .views import page, view, node, collection
+from .server import browser, driver
