@@ -1,118 +1,134 @@
 import re
 from weakref import WeakSet
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.support.wait import WebDriverWait as Wait
+from selenium.webdriver.common.action_chains import ActionChains as Action
+
+from .errors import *
+from .tools import *
 
 
-class ViewError(Exception):
-    pass
+__all__ = ["view", "container", "infinite_container",
+    "mapping", "tree", "button", "menu", "node"]
 
 
-class Timeout(ViewError):
-    pass
+class node:
 
+    def __init__(self, vtype, **selector):
+        self._vtype = vtype
+        self.selector = selector
+        self.classdict = {}
 
-class page:
+    def named(self, name):
+        return type(name, (self._vtype,), self.classdict, **self.selector)
 
-    def __init_subclass__(cls, url):
-        cls.url = url
+    def __set_name__(self, cls, name):
 
-    def __init__(self, driver):
-        self.driver = driver
-        self._active_children = WeakSet()
+        setattr(cls, name, self.named(name))
 
-    @property
-    def instance(self):
-        return self.driver
-
-    def refresh(self):
-        self.driver.get(self.url)
-        for c in self._active_children:
-            c.refresh()
+    def __call__(self, method):
+        self.classdict["exists"] = staticmethod(method)
         return self
 
-    def close(self):
-        self.driver.close()
 
-    @property
-    def find_element(self):
-        return self.driver.find_element
-
-    @property
-    def find_elements(self):
-        return self.driver.find_elements
-
-    def __repr__(self):
-        return type(self).__name__
-
-
-class descriptor_type(type):
-
-    def __get__(des, obj, cls):
-        if obj is not None:
-            return des(obj)
-        else:
-            return des
-
-
-class view(metaclass=descriptor_type):
+class view(structure):
 
     timeout = 15
+    _instance = None
+    highlight = "solid 1px red"
 
     def __new__(cls, *args, **kwargs):
-        self = _new_(view, cls, *args, **kwargs)
-        return _init_(self, *args, **kwargs)
+        self = new(view, cls, args, kwargs)
+        if re.findall("%[\w]", self.selector[1]):
+            def __format__(*positional, **keywords):
+                if positional and keywords:
+                    raise ValueError("Expected position "
+                        "or keyword arguments, not both.")
+                inputs = positional or keywords
+                method, selector = self.selector
+                self.selector = (method, selector % inputs)
+                self.__init__(*args, **kwargs)
+                return self
+            return __format__
+        else:
+            return self
 
     def __init_subclass__(cls, **selector):
+        super().__init_subclass__()
         if len(selector) > 1:
             raise ValueError("Pick one selector (e.g. xpath='//*')")
-        if selector:
+        if not selector:
+            if not getattr(cls, "selector", None):
+                cls.selector = ("xpath", ".")
+        else:
             cls.selector = next(iter(selector.items()))
 
     def __init__(self, parent):
-        if isinstance(parent, view):
-            parent._children.add(self)
+        parent._children.add(self)
+        self.driver = parent.driver
         self._children = WeakSet()
         self.parent = parent
         self.refresh()
 
     def refresh(self):
-        self._instance = None
+        del self.instance
         for c in self._children:
             c.refresh()
-
-    def instance(self):
-        if self._instance is None:
-            wait = Wait(self.parent, self.timeout)
-            try:
-                self._instance = wait.until(self._new)
-            except TimeoutException:
-                raise Timeout("%s is still missing after "
-                    "%s seconds." % (self, self.timeout))
-        return self._instance
-
-    def find(self, parent):
-        return parent.find_element(*self.selector)
-
-    def exists(self, element):
-        return True
+        return self
 
     def __getattr__(self, name):
+        i = self.instance
         try:
-            return getattr(self.instance(), name)
-        except AttributeError:
-            super(model, self).__getattr__(name)
+            return getattr(i, name)
+        except:
+            raise AttributeError("%r has not attribute %r" % (self, name))
+
+    @singleton
+    def instance(self):
+        wait = Wait(self.timeout, self.parent)
+        return wait.until(self._new_instance, "%r is still "
+            "missing after %s seconds." % (self, self.timeout))
+
+    @instance.callback
+    def _on_instance(self):
+        if self.highlight:
+            script = "arguments[0].style.outline = %r" % self.highlight
+            self.driver.execute_script(script, self.instance)
+
+    def _new_instance(self, parent):
+        self._instance = self._find_instance(parent)
+        if self.exists():
+            return self._instance
+        else:
+            self._instance = None
+
+    def __del__(self):
+        try:
+            script = 'arguments[0].style.outline = null'
+            self.driver.execute_script(script, self._instance)
+        except:
+            pass
+
+    def _find_instance(self, parent):
+        instance = parent.find_element(*self.selector)
+        instance.location_once_scrolled_into_view
+        return instance
+
+    def exists(self):
+        return True
+
+    def action(self):
+        return Action(self.driver).move_to_element(self.instance)
 
     def attr(self, name):
         return self.get_attribute(name)
 
+    def css(self, name):
+        return self.value_of_css_property(name)
+
     def prop(self, name):
         return self.get_property(name)
 
-    def _new(self, parent):
-        instance = self.find(parent)
-        if self.exists(instance):
-            return instance
+    def sleep(self, t):
+        time.sleep(t)
 
     def __repr__(self):
         classname, selector = type(self).__name__, self.selector[1]
@@ -122,80 +138,206 @@ class view(metaclass=descriptor_type):
         return "%s.%s" % (self.parent, type(self).__name__)
 
 
-class node:
+class button(view):
 
-    def __init__(self, of=view, **selector):
-        self._of = of
-        self.selector = selector
-        self.classdict = {}
+    def exists(self):
+        return self.is_displayed() and self.is_enabled()
 
-    def of(self, name):
-        return type(name, (self._of,), self.classdict, **self.selector)
+    def click(self):
+        # Chrome often shifts elements at the last moment. Thus references
+        # to elements may have stale coordinates that need to be refreshed.
+        Wait(self.timeout).until_is(self._clicked)
 
-    def __set_name__(self, cls, name):
-        setattr(cls, name, self.of(name))
+    def _clicked(self):
+        try:
+            self.instance.click()
+        except:
+            if isinstance(self.parent, view):
+                self.parent.refresh()
+            else:
+                self.refresh()
+            raise
+        else:
+            return True
 
-    def __call__(self, method):
-        self.classdict["exists"] = staticmethod(method)
-        return self
+
+class container(view):
+
+    of = "item"
+
+    class item(view, xpath="./*[%s]"):
+        timeout = 0
+
+    @property
+    def index(self):
+        n = 1
+        while True:
+            yield n
+            n += 1
+
+    def __getitem__(self, index):
+        return getattr(self, self.of)(index)
+
+    def __iter__(self):
+        self.instance
+        for x in self.index:
+            i = self[x]
+            try:
+                i.instance
+            except Timeout:
+                break
+            else:
+                yield i
 
 
-class collection:
+class infinite_container(container):
 
-    def __init__(self, contains=None, **attrs):
-        if isinstance(contains, node):
-            contains = contains.of(self.name)
-        self.contains = contains
-        self.attrs = attrs
+    def __getitem__(self, index):
+        if self._is_tail_index(index):
+            return self._get_tail(index)
+        items = iter(self)
+        for x in self.items:
+            try:
+                i = next(items)
+            except StopIteration:
+                raise IndexError("Did not find %r in %s" % (index, self))
+            else:
+                if x == index:
+                    return i
 
-    def __call__(self, contains):
-        if isinstance(contains, node):
-            contains = contains.of(self.name)
-        self.contains = contains
-        return self
+    def _get_tail(self, index):
+        return tuple(self)[index]
 
-    def __set_name__(self, cls, name):
-        self.name = name
+    def _is_tail_index(self, index):
+        try:
+            return index < 0
+        except:
+            return False
+
+    def __iter__(self):
+        length = (-1, 0)
+        while length[0] != length[1]:
+            self.load()
+            Wait(self.timeout).until_not(self.loading,
+                "Still loading after %s seconds." % self.timeout)
+            items = tuple(super().__iter__)
+            last = items[-1].instance()
+            self._scroll_into_view(last)
+            yield from items[length[1]:]
+            length[0], length[1] = length[1], len(items)
+
+    def load(self):
+        pass
+
+    def loading(self):
+        raise NotImplementedError()
+
+    def _scroll_into_view(self, v):
+        script = "arguments[0].scrollIntoView();"
+        self.driver.execute_script(script, v)
+
+
+class this:
 
     def __get__(self, obj, cls):
-        if obj is not None:
-            index = 0
-            found = []
-            while True:
-                new = self.contains(obj)(index + 1)
-                for k, v in self.attrs.items():
-                    setattr(new, k, v)
-                try:
-                    new.instance()
-                except Timeout:
-                    break
-                else:
-                    found.append(new)
-                index += 1
-            return found
+        if hasattr(cls, "__get__"):
+            return cls.__get__(obj, cls)
         else:
-            return self
+            return cls
 
 
-def _new_(origin, cls, *args, **kwargs):
-    new = super(origin, cls).__new__
-    if new is not object.__new__:
-        return new(cls, *args, **kwargs)
-    else:
-        return new(cls)
+class tree(container):
+
+    def inverse(self):
+        return zip(*self)
+
+    class item(container, xpath="./*[%s]"):
+
+        timeout = 0
+        item = this()
+
+        def inverse(self):
+            return zip(*self)
 
 
-def _init_(self, *args, **kwargs):
-    if re.findall("%[\w]", self.selector[1]):
-        def __format__(*positional, **keywords):
-            if positional and keywords:
-                raise ValueError("Expected position "
-                    "or keyword arguments, not both.")
-            inputs = positional or keywords
-            method, selector = self.selector
-            self.selector = (method, selector % inputs)
-            self.__init__(*args, **kwargs)
-            return self
-        return __format__
-    else:
-        return self
+class menu(tree):
+
+    def select(self, value):
+        self.find(value).click()
+
+    def find(self, value):
+        for item in self:
+            if item.matches(value):
+                return item
+        else:
+            raise ValueError("%r is not in %r" % (value, self))
+
+    class item(tree.item):
+
+        def select(self, value):
+            self.find(value).click()
+
+        def find(self, value):
+            for item in self:
+                if item.matches(value):
+                    return item
+            else:
+                raise ValueError("%r is not in %r" % (value, self))
+
+        def matches(self, text):
+            return self.text == text
+
+
+class mapping(container):
+
+    to = "text"
+
+    def keys(self):
+        return self.map.keys()
+
+    def values(self):
+        return self.map.values()
+
+    def items(self):
+        return self.map.items()
+
+    def refresh(self):
+        del self.map
+        super().refresh()
+
+    @singleton
+    def map(self):
+        return {self.transform(x) : x for x in self._iter()}
+
+    def __getitem__(self, key):
+        return self.map[key]
+
+    def __iter__(self):
+        return iter(self.map)
+
+    @staticmethod
+    def _key(obj, name):
+        if "." not in name:
+            return getattr(obj, name)
+        else:
+            value = obj
+            for n in name.split("."):
+                value = getattr(value, n)
+            return value
+
+    def _iter(self):
+        self.instance
+        for x in self.index:
+            i = self._getitem(x)
+            try:
+                i.instance
+            except Timeout:
+                break
+            else:
+                yield i
+
+    def _getitem(self, index):
+        return getattr(self, self.of)(index)
+
+    def transform(self, v):
+        return self._key(v, self.to)
