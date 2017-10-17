@@ -1,5 +1,6 @@
 import re
 from weakref import WeakSet
+from contextlib import contextmanager
 from selenium.webdriver.common.action_chains import ActionChains as Action
 
 from .errors import *
@@ -21,7 +22,6 @@ class node:
         return type(name, (self._vtype,), self.classdict, **self.selector)
 
     def __set_name__(self, cls, name):
-
         setattr(cls, name, self.named(name))
 
     def __call__(self, method):
@@ -52,7 +52,6 @@ class view(structure):
             return self
 
     def __init_subclass__(cls, **selector):
-        super().__init_subclass__()
         if len(selector) > 1:
             raise ValueError("Pick one selector (e.g. xpath='//*')")
         if not selector:
@@ -78,8 +77,12 @@ class view(structure):
         i = self.instance
         try:
             return getattr(i, name)
-        except:
-            raise AttributeError("%r has not attribute %r" % (self, name))
+        except Exception as e:
+            raise AttributeError("%r has not attribute %r" % (self, name)) from e
+
+    @property
+    def text(self):
+        return self.get_attribute("textContent")
 
     @singleton
     def instance(self):
@@ -181,13 +184,20 @@ class container(view):
     def __iter__(self):
         self.instance
         for x in self.index:
-            i = self[x]
-            try:
-                i.instance
-            except Timeout:
-                break
+            v = self._getitem(x)
+            if v is not None:
+                yield v
             else:
-                yield i
+                break
+
+    def _getitem(self, x):
+        i = self[x]
+        try:
+            i.instance
+        except Timeout:
+            return None
+        else:
+            return i
 
 
 class infinite_container(container):
@@ -237,15 +247,6 @@ class infinite_container(container):
         self.driver.execute_script(script, v)
 
 
-class this:
-
-    def __get__(self, obj, cls):
-        if hasattr(cls, "__get__"):
-            return cls.__get__(obj, cls)
-        else:
-            return cls
-
-
 class tree(container):
 
     def inverse(self):
@@ -253,36 +254,58 @@ class tree(container):
 
     class item(container, xpath="./*[%s]"):
 
-        timeout = 0
         item = this()
+        timeout = 0
 
         def inverse(self):
             return zip(*self)
 
 
-class menu(tree):
 
-    def select(self, value):
-        self.find(value).click()
+class menu(button, container):
 
-    def find(self, value):
-        for item in self:
-            if item.matches(value):
-                return item
-        else:
-            raise ValueError("%r is not in %r" % (value, self))
+    _enabled = False
 
-    class item(tree.item):
+    @property
+    def enabled(self):
+        return self._enabled
 
-        def select(self, value):
-            self.find(value).click()
+    def click(self):
+        self._enabled = not self._enabled
+        super().click()
 
-        def find(self, value):
-            for item in self:
-                if item.matches(value):
-                    return item
-            else:
-                raise ValueError("%r is not in %r" % (value, self))
+    @contextmanager
+    def open(self):
+        self.click()
+        try:
+            yield self
+        finally:
+            if self._enabled:
+                self.click()
+
+    def select(self, value, skip=0):
+        e = self.find(value, skip)
+        e.click()
+        return e
+
+    def find(self, value, skip=0):
+        for i, x in enumerate(self.index):
+            if not i < skip:
+                item = self._getitem(x)
+                if item is not None:
+                    if item.matches(value):
+                        return item
+                else:
+                    break
+        raise ValueError("%s%r was not found in %r" % (
+            ("After skipping %s, " % skip if skip else ""),
+            value, self))
+
+    class item(container.item):
+
+        def click(self):
+            self.parent._enabled = False
+            self.instance.click()
 
         def matches(self, text):
             return self.text == text

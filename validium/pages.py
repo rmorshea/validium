@@ -17,6 +17,20 @@ class page(structure):
         super().__init_subclass__()
         cls.url, cls.pattern = url, pattern
 
+    def __new__(cls, *args, **kwargs):
+        self = new(page, cls, args, kwargs)
+        if re.findall("%[\w]", self.url):
+            def __format__(*positional, **keywords):
+                if positional and keywords:
+                    raise ValueError("Expected position "
+                        "or keyword arguments, not both.")
+                self.url = self.url % (positional or keywords)
+                self.__init__(*args, **kwargs)
+                return self
+            return __format__
+        else:
+            return self
+
     def __init__(self, parent):
         if not isinstance(parent, (Remote, page)):
             raise TypeError("The parent of a page "
