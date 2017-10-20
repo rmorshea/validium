@@ -1,5 +1,8 @@
 import re
+import types
+import inspect
 from weakref import WeakSet
+from importlib import import_module
 from contextlib import contextmanager
 from selenium.webdriver.common.action_chains import ActionChains as Action
 
@@ -8,25 +11,10 @@ from .tools import *
 
 
 __all__ = ["view", "container", "infinite_container",
-    "mapping", "tree", "button", "menu", "node"]
+    "mapping", "tree", "button", "menu"]
 
 
-class node:
-
-    def __init__(self, vtype, **selector):
-        self._vtype = vtype
-        self.selector = selector
-        self.classdict = {}
-
-    def named(self, name):
-        return type(name, (self._vtype,), self.classdict, **self.selector)
-
-    def __set_name__(self, cls, name):
-        setattr(cls, name, self.named(name))
-
-    def __call__(self, method):
-        self.classdict["exists"] = staticmethod(method)
-        return self
+XPATH_IDENTIFIERS = ("//", "./", "..", "(/", "(.")
 
 
 class view(structure):
@@ -34,9 +22,25 @@ class view(structure):
     timeout = 15
     _instance = None
     highlight = "solid 1px red"
+    selector = ("xpath", ".")
+
+    def __init_subclass__(cls, **kwargs):
+        if "selector" in cls.__dict__:
+            method = ("xpath" if cls.selector[:2]
+                in XPATH_IDENTIFIERS else "css")
+            cls.selector = (method, cls.selector)
+        if "imports" in kwargs:
+            module = cls.__module__
+            imports = kwargs["imports"]
+            if not isinstance(imports, (list, tuple, set)):
+                imports = [imports]
+            for i in reversed(imports):
+                views = import_views(i, module)
+                for k, v in views.items():
+                    setattr(cls, k, v)
 
     def __new__(cls, *args, **kwargs):
-        self = new(view, cls, args, kwargs)
+        self = new(view, cls, *args, **kwargs)
         if re.findall("%[\w]", self.selector[1]):
             def __format__(*positional, **keywords):
                 if positional and keywords:
@@ -50,15 +54,6 @@ class view(structure):
             return __format__
         else:
             return self
-
-    def __init_subclass__(cls, **selector):
-        if len(selector) > 1:
-            raise ValueError("Pick one selector (e.g. xpath='//*')")
-        if not selector:
-            if not getattr(cls, "selector", None):
-                cls.selector = ("xpath", ".")
-        else:
-            cls.selector = next(iter(selector.items()))
 
     def __init__(self, parent):
         parent._children.add(self)
@@ -78,11 +73,22 @@ class view(structure):
         try:
             return getattr(i, name)
         except Exception as e:
-            raise AttributeError("%r has not attribute %r" % (self, name)) from e
+            raise AttributeError("%r has no attribute %r" % (self, name)) from e
 
     @property
     def text(self):
-        return self.get_attribute("textContent")
+        text = self.instance.text
+        if not text:
+            text = self.get_attribute("textContent")
+        return text
+
+    @property
+    def classes(self):
+        c = self.attr("class")
+        if c is None:
+            return []
+        else:
+            return c.split()
 
     @singleton
     def instance(self):
@@ -93,8 +99,11 @@ class view(structure):
     @instance.callback
     def _on_instance(self):
         if self.highlight:
-            script = "arguments[0].style.outline = %r" % self.highlight
-            self.driver.execute_script(script, self.instance)
+            try:
+                script = "arguments[0].style.outline = %r" % self.highlight
+                self.driver.execute_script(script, self.instance)
+            except:
+                pass
 
     def _new_instance(self, parent):
         self._instance = self._find_instance(parent)
@@ -168,8 +177,9 @@ class container(view):
 
     of = "item"
 
-    class item(view, xpath="./*[%s]"):
-        timeout = 0
+    class item(view):
+        selector = "./*[%s]"
+        timeout = 0.25
 
     @property
     def index(self):
@@ -179,6 +189,10 @@ class container(view):
             n += 1
 
     def __getitem__(self, index):
+        item = getattr(self, self.of)
+        if isinstance(item, view):
+            raise TypeError("The selector %r of '%s' is not "
+                "formatable" % (item.selector[1], item))
         return getattr(self, self.of)(index)
 
     def __iter__(self):
@@ -252,68 +266,20 @@ class tree(container):
     def inverse(self):
         return zip(*self)
 
-    class item(container, xpath="./*[%s]"):
+    class item(container):
+        selector = "./*[%s]"
 
         item = this()
-        timeout = 0
+        timeout = 0.25
 
         def inverse(self):
             return zip(*self)
 
 
-
-class menu(button, container):
-
-    _enabled = False
-
-    @property
-    def enabled(self):
-        return self._enabled
-
-    def click(self):
-        self._enabled = not self._enabled
-        super().click()
-
-    @contextmanager
-    def open(self):
-        self.click()
-        try:
-            yield self
-        finally:
-            if self._enabled:
-                self.click()
-
-    def select(self, value, skip=0):
-        e = self.find(value, skip)
-        e.click()
-        return e
-
-    def find(self, value, skip=0):
-        for i, x in enumerate(self.index):
-            if not i < skip:
-                item = self._getitem(x)
-                if item is not None:
-                    if item.matches(value):
-                        return item
-                else:
-                    break
-        raise ValueError("%s%r was not found in %r" % (
-            ("After skipping %s, " % skip if skip else ""),
-            value, self))
-
-    class item(container.item):
-
-        def click(self):
-            self.parent._enabled = False
-            self.instance.click()
-
-        def matches(self, text):
-            return self.text == text
-
-
 class mapping(container):
 
-    to = "text"
+    minimum = None
+    maximum = None
 
     def keys(self):
         return self.map.keys()
@@ -330,7 +296,7 @@ class mapping(container):
 
     @singleton
     def map(self):
-        return {self.transform(x) : x for x in self._iter()}
+        return {x.key() : x for x in self._iter()}
 
     def __getitem__(self, key):
         return self.map[key]
@@ -338,29 +304,84 @@ class mapping(container):
     def __iter__(self):
         return iter(self.map)
 
-    @staticmethod
-    def _key(obj, name):
-        if "." not in name:
-            return getattr(obj, name)
-        else:
-            value = obj
-            for n in name.split("."):
-                value = getattr(value, n)
-            return value
-
     def _iter(self):
         self.instance
-        for x in self.index:
-            i = self._getitem(x)
-            try:
-                i.instance
-            except Timeout:
-                break
-            else:
-                yield i
+        for i, x in enumerate(self.index):
+            if self.minimum is None or self.minimum < i:
+                if self.maximum is None or self.maximum > i:
+                    i = self._getitem(x)
+                    try:
+                        i.instance
+                    except Timeout:
+                        break
+                    else:
+                        yield i
+                else:
+                    break
 
     def _getitem(self, index):
         return getattr(self, self.of)(index)
 
-    def transform(self, v):
-        return self._key(v, self.to)
+    class item(container.item):
+
+        def key(self):
+            return self.text
+
+
+class menu(button, mapping):
+
+    _displayed = False
+    always_displayed = False
+
+    def open(self):
+        if not self.always_displayed and not self._displayed:
+            self.click()
+            self._displayed = True
+
+    def close(self):
+        if not self.always_displayed and self._displayed:
+            self.click()
+            self._displayed = False
+
+    @contextmanager
+    def displayed(self):
+        self.open()
+        try:
+            yield self
+        finally:
+            self.close()
+
+    def select(self, value):
+        e = self.find(value)
+        e.click()
+        return e
+
+    def find(self, value):
+        self.open()
+        return self[value]
+
+    class item(mapping.item):
+
+        def click(self):
+            p = self.parent
+            if not p.always_displayed and p._displayed:
+                p._enabled = False
+            self.instance.click()
+
+
+def import_views(package, origin=None):
+    if package.startswith("."):
+        if origin is None:
+            frame = inspect.currentframe()
+            g = frame.f_back.f_globals
+            package = g["__name__"] + package
+        else:
+            package = origin + package
+    module = import_module(package)
+    views = {}
+    for name in dir(module):
+        value = getattr(module, name)
+        if inspect.isclass(value) and issubclass(value, view):
+            if value.__module__ == module.__name__:
+                views[name] = value
+    return views

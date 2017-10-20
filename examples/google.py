@@ -7,31 +7,43 @@ from validium import *
 exe = "/Users/RyanMorshead/Documents/Software/Development/imaginary-circle/misc/drivers/chromedriver"
 
 
-class google(page, url="https://www.google.com/"):
+class google(page):
+    url = "https://www.google.com/"
 
-    class search(view, xpath="//*[@id='lst-ib']"):
+    class search(view):
+        selector = "//*[@id='lst-ib']"
 
-        hints = node(view, xpath='//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[%s]')
-        button = node(view, xpath='//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[(last() - 1)]//input')
+        class hints(view):
+            selector = '//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[%s]'
+        class go(button):
+            selector = '//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[(last() - 1)]//input'
 
-    class results(page, pattern="./search?"):
+    class results(page):
+
+        pattern="./search?"
 
         timeout = 5
 
-        class table(container, css="#center_col"):
+        class table(container):
 
-            class item(mapping.item, xpath="(.//*[@class='g']//*[@class='rc'])[%s]"):
+            selector = "#center_col"
 
-                link = node(button, xpath=".//a")
-                cite = node(view, xpath=".//cite")
-                description = node(view, xpath=".//span[@class='st']")
+            class item(mapping.item):
+                selector = "(.//*[@class='g']//*[@class='rc'])[%s]"
+
+                class link(button):
+                    selector = ".//a"
+                class cite(view):
+                    selector = ".//cite"
+                class description(view):
+                    selector = ".//span[@class='st']"
 
 
 with closing(Chrome(exe)) as chrome:
     g = google(chrome)
     search = g.search
     search.send_keys("apple")
-    search.button.click()
+    search.go.click()
 
     r = g.results
     for result in r.table:

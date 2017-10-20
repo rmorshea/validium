@@ -178,9 +178,9 @@ def counter(n=0):
         n += 1
 
 
-def new(origin, cls, args, kwargs):
-    new = super(origin, cls).__new__
-    if new is not object.__new__:
-        return new(cls, *args, **kwargs)
+def new(origin, cls, *args, **kwargs):
+    _new = super(origin, cls).__new__
+    if _new is not object.__new__:
+        return _new(cls, *args, **kwargs)
     else:
-        return new(cls)
+        return _new(cls)

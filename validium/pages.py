@@ -6,20 +6,17 @@ from selenium.webdriver import Remote
 
 from .errors import *
 from .tools import *
-from .views import node, view
 
 
 class page(structure):
 
+    url = None
+    patter = None
     timeout = 15
 
-    def __init_subclass__(cls, url=None, pattern=None):
-        super().__init_subclass__()
-        cls.url, cls.pattern = url, pattern
-
     def __new__(cls, *args, **kwargs):
-        self = new(page, cls, args, kwargs)
-        if re.findall("%[\w]", self.url):
+        self = new(page, cls, *args, **kwargs)
+        if self.url is not None and re.findall("%[\w]", self.url):
             def __format__(*positional, **keywords):
                 if positional and keywords:
                     raise ValueError("Expected position "
@@ -62,7 +59,7 @@ class page(structure):
         else:
             if self.url.startswith("./"):
                 self.url = self.parent.url + self.url[2:]
-            initial = self.current_url
+            initial = self.driver.current_url
             if initial != self.url:
                 self.get(self.url)
                 wait(self.timeout, lambda : self.url == self.current_url,
@@ -71,11 +68,12 @@ class page(structure):
 
     @property
     def instance(self):
+        # self._transition()
         return self.parent
 
     def get(self, url=None, force=False):
         if url is not None:
-            self.instance.get(url)
+            self.driver.get(url)
         elif force or self.current_url != self.url:
             self._transition()
         for c in self._children:

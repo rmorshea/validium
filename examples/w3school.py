@@ -7,26 +7,34 @@ from validium import *
 exe = "/Users/RyanMorshead/Documents/Software/Development/imaginary-circle/misc/drivers/chromedriver"
 
 
-class w3schools(page, url="https://www.w3schools.com/"):
+class w3schools(page):
+    url = "https://www.w3schools.com/"
 
-    class sidebar(menu, xpath="//*[contains(@class, 'w3-sidebar')]"):
+    class sidebar(menu):
+        selector = "//*[contains(@class, 'w3-sidebar')]"
 
-        class item(menu.item, xpath=".//a[%s]"):
+        always_displayed = True
 
-            def matches(self, text):
-                return self.text.lower().endswith(text.lower())
+        class item(menu.item):
+            highlight = False
+            selector = ".//a[%s]"
+
+            def key(self):
+                return self.text.lower()
 
 
-class tables_tutorial(w3schools, url="./html/html_tables.asp"):
+class tables_tutorial(w3schools):
+    url = "./html/html_tables.asp"
 
-    class customers(tree, xpath="//*[@id='customers']/tbody"): pass
+    class customers(tree):
+        selector = "//*[@id='customers']/tbody"
 
 
 with closing(Chrome(exe)) as chrome:
     home = w3schools(chrome)
 
-    home.sidebar.select("html")
-    home.sidebar.select("tables")
+    home.sidebar.select("learn html")
+    home.sidebar.select("html tables")
 
     tutorial = tables_tutorial(home)
 
@@ -38,5 +46,3 @@ with closing(Chrome(exe)) as chrome:
         print(divider)
         for i in c[1:]:
             print(i.text)
-
-    tutorial.sidebar.select("home")
