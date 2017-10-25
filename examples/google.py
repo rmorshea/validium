@@ -3,8 +3,8 @@ from selenium.webdriver import Chrome
 
 from validium import *
 
-
-exe = "/Users/RyanMorshead/Documents/Software/Development/imaginary-circle/misc/drivers/chromedriver"
+import os
+exe = os.path.expanduser("~/Downloads/chromedriver")
 
 
 class google(page):
@@ -29,6 +29,7 @@ class google(page):
             selector = "#center_col"
 
             class item(mapping.item):
+
                 selector = "(.//*[@class='g']//*[@class='rc'])[%s]"
 
                 class link(button):

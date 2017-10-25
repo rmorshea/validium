@@ -1,6 +1,7 @@
 import re
 import time
 from weakref import WeakSet
+from contextlib import contextmanager
 from selenium.webdriver import Remote
 
 
@@ -11,8 +12,9 @@ from .tools import *
 class page(structure):
 
     url = None
-    patter = None
+    pattern = None
     timeout = 15
+    redirect = None
 
     def __new__(cls, *args, **kwargs):
         self = new(page, cls, *args, **kwargs)
@@ -41,6 +43,13 @@ class page(structure):
             self.parent = parent
         self._transition()
 
+    def __getattr__(self, name):
+        i = self.instance
+        try:
+            return getattr(i, name)
+        except Exception as e:
+            raise AttributeError("%r has no attribute %r" % (self, name)) from e
+
     def _transition(self):
         contingent = not self.url or self.url.startswith("./")
         if contingent and not isinstance(self.parent, page):
@@ -61,10 +70,36 @@ class page(structure):
                 self.url = self.parent.url + self.url[2:]
             initial = self.driver.current_url
             if initial != self.url:
-                self.get(self.url)
+                self.driver.get(self.url)
+                for name in dir(type(self)):
+                    value = getattr(type(self), name)
+                    if inspect.isclass(value) and issubclass(value, redirect):
+                        getattr(self, name).callback()
+                        break
                 wait(self.timeout, lambda : self.url == self.current_url,
                     ("Failed to transition from %r to %r after %s "
                     "seconds" % (self.current_url, self.url, self.timeout)))
+
+    @contextmanager
+    def window_size(self, x, y):
+        original = self.driver.get_window_size()
+        self.driver.set_window_size(x, y)
+        wait(3, lambda : (
+            self.driver.get_window_size()
+            == {"width": x, "height": y}))
+        try:
+            yield
+        finally:
+            self.driver.set_window_size(original["width"], original["height"])
+            wait(3, lambda : (self.driver.get_window_size() == original))
+
+    @property
+    def size(self):
+        return self._size
+
+    @size.setter
+    def size(self, value):
+        self.driver.set_window_size(*value)
 
     @property
     def instance(self):
@@ -94,3 +129,9 @@ class page(structure):
 
     def __repr__(self):
         return type(self).__name__
+
+
+class redirect(page):
+
+    def callback(self):
+        raise NotImplementedError()

@@ -1,9 +1,12 @@
 import re
+import sys
 import types
 import inspect
 from weakref import WeakSet
 from importlib import import_module
 from contextlib import contextmanager
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains as Action
 
 from .errors import *
@@ -11,7 +14,7 @@ from .tools import *
 
 
 __all__ = ["view", "container", "infinite_container",
-    "mapping", "tree", "button", "menu"]
+    "mapping", "tree", "button", "menu", "field", "table"]
 
 
 XPATH_IDENTIFIERS = ("//", "./", "..", "(/", "(.")
@@ -19,16 +22,17 @@ XPATH_IDENTIFIERS = ("//", "./", "..", "(/", "(.")
 
 class view(structure):
 
-    timeout = 15
-    _instance = None
+    timeout = 20
     highlight = "solid 1px red"
     selector = ("xpath", ".")
+    _persistant_instances = {}
 
     def __init_subclass__(cls, **kwargs):
         if "selector" in cls.__dict__:
-            method = ("xpath" if cls.selector[:2]
-                in XPATH_IDENTIFIERS else "css")
-            cls.selector = (method, cls.selector)
+            if not isinstance(cls.selector, tuple):
+                method = ("xpath" if cls.selector[:2]
+                    in XPATH_IDENTIFIERS else "css")
+                cls.selector = (method, cls.selector)
         if "imports" in kwargs:
             module = cls.__module__
             imports = kwargs["imports"]
@@ -90,40 +94,6 @@ class view(structure):
         else:
             return c.split()
 
-    @singleton
-    def instance(self):
-        wait = Wait(self.timeout, self.parent)
-        return wait.until(self._new_instance, "%r is still "
-            "missing after %s seconds." % (self, self.timeout))
-
-    @instance.callback
-    def _on_instance(self):
-        if self.highlight:
-            try:
-                script = "arguments[0].style.outline = %r" % self.highlight
-                self.driver.execute_script(script, self.instance)
-            except:
-                pass
-
-    def _new_instance(self, parent):
-        self._instance = self._find_instance(parent)
-        if self.exists():
-            return self._instance
-        else:
-            self._instance = None
-
-    def __del__(self):
-        try:
-            script = 'arguments[0].style.outline = null'
-            self.driver.execute_script(script, self._instance)
-        except:
-            pass
-
-    def _find_instance(self, parent):
-        instance = parent.find_element(*self.selector)
-        instance.location_once_scrolled_into_view
-        return instance
-
     def exists(self):
         return True
 
@@ -149,8 +119,91 @@ class view(structure):
     def __str__(self):
         return "%s.%s" % (self.parent, type(self).__name__)
 
+    @contextmanager
+    def window_size(self, x, y):
+        original = self.driver.get_window_size()
+        self.driver.set_window_size(x, y)
+        wait(5, lambda : (self.driver.get_window_size() == {"width": x, "height": y}),
+            "failed to resize window to (%s, %s)" % (x, y))
+        try:
+            yield
+        finally:
+            self.driver.set_window_size(original["width"], original["height"])
+            wait(5, lambda : (self.driver.get_window_size() == original),
+            "failed to resize window to (%s, %s)" % (original["width"], original["height"]))
+
+    @property
+    def instance(self):
+        inst = self._persistant_instances.get(self.selector)
+        if inst is None:
+            wait = Wait(self.timeout, self.parent)
+            inst = wait.until(self._new_instance, "%r is still "
+                "unavailable after %s seconds." % (self, self.timeout))
+            self._persistant_instances[self.selector] = inst
+            inst.location_once_scrolled_into_view
+        return inst
+
+    @instance.deleter
+    def instance(self):
+        if self.selector in self._persistant_instances:
+            del self._persistant_instances[self.selector]
+
+    def _new_instance(self, parent):
+        inst = self._find_instance(parent)
+        self._prep_instance(inst)
+        self._persistant_instances[self.selector] = inst
+        if self.exists():
+            return inst
+        else:
+            del self._persistant_instances[self.selector]
+
+    def _find_instance(self, parent):
+        return parent.find_element(*self.selector)
+
+    def _prep_instance(self, instance):
+        if self.highlight:
+            script = 'arguments[0].style.outline = %r' % self.highlight
+            self.driver.execute_script(script, instance)
+        original_execute = instance._execute
+        def _execute(*args, **kwargs):
+            try:
+                return original_execute(*args, **kwargs)
+            except StaleElementReferenceException:
+                self.refresh().instance
+                raw = self._persistant_instances[self.selector]
+                return raw._execute(*args, **kwargs)
+        instance._execute = _execute
+
+    def __del__(self):
+        inst = self._persistant_instances.get(self.selector)
+        if inst is not None and sys.getrefcount(inst) == 1:
+            try:
+                inst = self._persistant_instances.pop(self.selector)
+                script = 'arguments[0].style.outline = null'
+                self.driver.execute_script(script, inst)
+            except:
+                pass
+
+
+class field(view):
+
+    @property
+    def value(self):
+        return self.prop("value")
+
+    def send_special_keys(self, *keys):
+        self.send_keys("".join(getattr(Keys, k.upper()) for k in keys))
+
+    def backspace(self, n=1):
+        self.send_special_keys(*(("backspace",)*n))
+
+    def enter(self):
+        self.send_special_keys("enter")
+
 
 class button(view):
+
+    click_timeout = 10
 
     def exists(self):
         return self.is_displayed() and self.is_enabled()
@@ -158,7 +211,7 @@ class button(view):
     def click(self):
         # Chrome often shifts elements at the last moment. Thus references
         # to elements may have stale coordinates that need to be refreshed.
-        Wait(self.timeout).until_is(self._clicked)
+        Wait(self.click_timeout).until_is(self._clicked, "failed to click %r" % self)
 
     def _clicked(self):
         try:
@@ -178,8 +231,8 @@ class container(view):
     of = "item"
 
     class item(view):
-        selector = "./*[%s]"
         timeout = 0.25
+        selector = "./*[%s]"
 
     @property
     def index(self):
@@ -296,7 +349,8 @@ class mapping(container):
 
     @singleton
     def map(self):
-        return {x.key() : x for x in self._iter()}
+        return {(x.key() if x.key else i) : x
+            for i, x in enumerate(self._iter())}
 
     def __getitem__(self, key):
         return self.map[key]
@@ -309,13 +363,13 @@ class mapping(container):
         for i, x in enumerate(self.index):
             if self.minimum is None or self.minimum < i:
                 if self.maximum is None or self.maximum > i:
-                    i = self._getitem(x)
+                    item = self._getitem(x)
                     try:
-                        i.instance
+                        item.instance
                     except Timeout:
                         break
                     else:
-                        yield i
+                        yield item
                 else:
                     break
 
@@ -326,6 +380,17 @@ class mapping(container):
 
         def key(self):
             return self.text
+
+
+class table(mapping):
+    of = "row"
+
+    class row(mapping, mapping.item):
+        key = None
+        selector = './tr[%s]'
+
+        class item(mapping.item):
+            selector = './td[%s]'
 
 
 class menu(button, mapping):
@@ -360,13 +425,13 @@ class menu(button, mapping):
         self.open()
         return self[value]
 
-    class item(mapping.item):
+    class item(button, mapping.item):
 
         def click(self):
             p = self.parent
             if not p.always_displayed and p._displayed:
                 p._enabled = False
-            self.instance.click()
+            super().click()
 
 
 def import_views(package, origin=None):

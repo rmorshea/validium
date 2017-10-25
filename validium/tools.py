@@ -15,13 +15,13 @@ class Wait:
     def __init__(self, timeout, *args, **kwargs):
         self.timeout, self.args, self.kwargs = timeout, args, kwargs
 
-    def until_is(self, condition, reason=None, default=DEFAULT):
-        return self.until(condition, reason, default, False)
+    def until_is(self, condition, reason=None, default=DEFAULT, period=0.2):
+        return self.until(condition, reason, default, False, period)
 
-    def until_is_not(self, condition, reason=None, default=DEFAULT):
-        return self.until(condition, reason, default, True)
+    def until_is_not(self, condition, reason=None, default=DEFAULT, period=0.2):
+        return self.until(condition, reason, default, True, period)
 
-    def until(self, condition, reason=None, default=DEFAULT, inverse=False):
+    def until(self, condition, reason=None, default=DEFAULT, inverse=False, period=0.2):
         errors = []
         stop = time.time() + self.timeout
         while True:
@@ -42,61 +42,41 @@ class Wait:
                         raise too_long from errors[-1]
                     else:
                         raise too_long
+            time.sleep(period)
 
 
-def wait_until_is(timeout, reason=None, default=Wait.DEFAULT):
+def wait_until_is(timeout, reason=None, default=Wait.DEFAULT, period=0.2):
     def setup(method):
         @wraps(method)
         def wrapper(*args, **kwargs):
             return Wait(timeout, *args, **kwargs
-                ).until_is(method, reason, default)
+                ).until_is(method, reason, default, period)
         return wrapper
     return setup
 
 
-def wait_until_is_not(timout, reason=None, default=Wait.DEFAULT):
+def wait_until_is_not(timout, reason=None, default=Wait.DEFAULT, period=0.2):
     def setup(method):
         @wraps(method)
         def wrapper(*args, **kwargs):
             return Wait(timeout, *args, **kwargs
-                ).until_is_not(method, reason, default)
+                ).until_is_not(method, reason, default, period)
         return wrapper
     return setup
 
 
 
-def wait(timeout, condition, reason=None, default=Wait.DEFAULT, inverse=False):
-    return Wait(timeout).until(condition, reason, default, inverse)
+def wait(timeout, condition, reason=None, default=Wait.DEFAULT, inverse=False, period=0.2):
+    return Wait(timeout).until(condition, reason, default, inverse, period)
 
 
 class metastructure(type):
-
-    @property
-    def structural_parent(self):
-        return self._structural_parent()
-
-    def __set_name__(cls, owner, name):
-        cls._structural_parent = ref(owner)
 
     def __get__(des, obj, cls):
         if obj is not None:
             return des(obj)
         else:
             return des
-
-
-def refine(*bases):
-    def setup(cls):
-        name = bases[-1].__name__
-        roots = bases
-        for c in cls.__bases__:
-            if c not in roots:
-                roots += (c,)
-        new = type(name, roots, dict(cls.__dict__))
-        parent = bases[-1].structural_parent
-        setattr(parent, name, new)
-        return new
-    return setup
 
 
 class this:
@@ -113,12 +93,22 @@ class structure(metaclass=metastructure):
     def __init__(self, parent):
         self.parent = parent
 
-    def lineage(self, index=None):
+    def lineage(self, index=None, name=None):
         if index is not None:
-            lineage = self._lineage()
-            for i in range(index + 1):
-                parent = next(lineage)
-            return parent
+            if index > 0:
+                lineage = self._lineage()
+                for i in range(index + 1):
+                    parent = next(lineage)
+                return parent
+            else:
+                return tuple(self._lineage())[index]
+        elif name is not None:
+            for p in self._lineage():
+                if type(p).__name__ == name:
+                    return p
+            else:
+                raise ValueError("No parent with the "
+                    "type name %r exists" % name)
         else:
             return tuple(self._lineage())
 
@@ -127,12 +117,6 @@ class structure(metaclass=metastructure):
         while parent is not None:
             yield parent
             parent = getattr(parent, "parent", None)
-
-    def __getattr__(self, name):
-        try:
-            return getattr(self.instance, name)
-        except AttributeError:
-            raise AttributeError("%s has no attribute %r" % (self, name))
 
 
 class singleton:
@@ -161,7 +145,7 @@ class singleton:
 
         @singleton.deleter
         def singleton(self):
-            self._instance = None
+            setattr(self, attr, None)
 
         self._singleton = singleton
 
