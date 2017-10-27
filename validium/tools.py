@@ -1,11 +1,53 @@
 import time
 import inspect
+from importlib import import_module
 from weakref import ref
 from functools import wraps
 from .errors import *
+from . import config
 
 
 _AttributeError = type("AttributeError", (Exception,), {})
+
+
+def import_structures(package, origin=None):
+    if package.startswith("."):
+        if origin is None:
+            frame = inspect.currentframe()
+            g = frame.f_back.f_globals
+            package = g["__name__"] + package
+        else:
+            package = origin + package
+    module = import_module(package)
+    views = {}
+    for name in dir(module):
+        if not name.startswith("_"):
+            value = getattr(module, name)
+            if inspect.isclass(value) and issubclass(value, structure):
+                if value.__module__ == module.__name__:
+                    views[name] = value
+    return views
+
+
+class configurable:
+
+    def __init__(self, name=None):
+        if name is not None:
+            self.default = getattr(config, name)
+
+    def __set_name__(self, cls, name):
+        if not hasattr(self, "default"):
+            self.default = getattr(config, name)
+        self.name = name
+
+    def __get__(self, obj, cls):
+        return (obj or cls).__dict__.setdefault(self.name, self.default)
+
+    def __set__(self, obj, value):
+        obj.__dict__[self.name] = value
+
+    def __delete__(self, obj):
+        obj.__dict__[self.name] = self.default
 
 
 class Wait:
@@ -15,13 +57,13 @@ class Wait:
     def __init__(self, timeout, *args, **kwargs):
         self.timeout, self.args, self.kwargs = timeout, args, kwargs
 
-    def until_is(self, condition, reason=None, default=DEFAULT, period=0.2):
-        return self.until(condition, reason, default, False, period)
+    def until_is(self, condition, what, default=DEFAULT, period=0.2):
+        return self.until(condition, what, default, False, period)
 
-    def until_is_not(self, condition, reason=None, default=DEFAULT, period=0.2):
-        return self.until(condition, reason, default, True, period)
+    def until_is_not(self, condition, what, default=DEFAULT, period=0.2):
+        return self.until(condition, what, default, True, period)
 
-    def until(self, condition, reason=None, default=DEFAULT, inverse=False, period=0.2):
+    def until(self, condition, what, default=DEFAULT, inverse=False, period=0.2):
         errors = []
         stop = time.time() + self.timeout
         while True:
@@ -36,38 +78,45 @@ class Wait:
                 if default is not Wait.DEFAULT:
                     return default
                 else:
-                    reason = reason or getattr(condition, "__doc__", None)
-                    too_long = Timeout(reason or "%s seconds" % self.timeout)
+                    what = what(*self.args, **self.kwargs) if callable(what) else what
+                    etype = type(what) if isinstance(what, Exception) else Timeout
+                    p1 = "Doesn't expect" if inverse else "Expects"
+                    p3 = "after %s seconds." % self.timeout
+                    msg = " ".join([p1, what, p3])
                     if len(errors):
-                        raise too_long from errors[-1]
+                        addon = " However one or more %s failures were encountered."
+                        msg += addon % type(errors[-1]).__name__
+                        raise etype(msg) from errors[-1]
                     else:
-                        raise too_long
+                        raise etype(msg)
             time.sleep(period)
 
 
-def wait_until_is(timeout, reason=None, default=Wait.DEFAULT, period=0.2):
+def wait_until_is(timeout, what=None, default=Wait.DEFAULT, period=0.2):
     def setup(method):
+        w = what or method.__doc__ or method.__name__.replace("_", " ")
         @wraps(method)
         def wrapper(*args, **kwargs):
             return Wait(timeout, *args, **kwargs
-                ).until_is(method, reason, default, period)
+                ).until_is(method, w, default, period)
         return wrapper
     return setup
 
 
-def wait_until_is_not(timout, reason=None, default=Wait.DEFAULT, period=0.2):
+def wait_until_is_not(timout, what=None, default=Wait.DEFAULT, period=0.2):
     def setup(method):
+        w = what or method.__doc__ or method.__name__.split()
         @wraps(method)
         def wrapper(*args, **kwargs):
             return Wait(timeout, *args, **kwargs
-                ).until_is_not(method, reason, default, period)
+                ).until_is_not(method, w, default, period)
         return wrapper
     return setup
 
 
 
-def wait(timeout, condition, reason=None, default=Wait.DEFAULT, inverse=False, period=0.2):
-    return Wait(timeout).until(condition, reason, default, inverse, period)
+def wait(timeout, condition, what, default=Wait.DEFAULT, inverse=False, period=0.2):
+    return Wait(timeout).until(condition, what, default, inverse, period)
 
 
 class metastructure(type):

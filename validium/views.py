@@ -2,30 +2,62 @@ import re
 import sys
 import types
 import inspect
+import logging
 from weakref import WeakSet
-from importlib import import_module
+from logging import getLogger
 from contextlib import contextmanager
 from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains as Action
 
+from . import config
 from .errors import *
 from .tools import *
 
 
-__all__ = ["view", "container", "infinite_container",
+__all__ = ["slowdown", "view", "container", "infinite_container",
     "mapping", "tree", "button", "menu", "field", "table"]
 
 
 XPATH_IDENTIFIERS = ("//", "./", "..", "(/", "(.")
 
 
+@contextmanager
+def slowdown(t):
+    hold = config.slowdown
+    config.slowdown = t
+    try:
+        yield
+    finally:
+        config.slowdown = hold
+
+
+def call_string(args, kwargs, form=(lambda i : "%s=%r" % i)):
+    a, kw = map(str, args), map(form, kwargs.items())
+    return ", ".join(tuple(a) + tuple(kw))
+
+
 class view(structure):
 
-    timeout = 20
+    _javascript = {
+        "eventFire": """function eventFire(el, etype){
+              if (el.fireEvent) {
+                el.fireEvent('on' + etype);
+              } else {
+                var evObj = document.createEvent('Events');
+                evObj.initEvent(etype, true, false);
+                el.dispatchEvent(evObj);
+              }
+            }
+            """
+    }
+
+    _structure_source = "selector"
     highlight = "solid 1px red"
     selector = ("xpath", ".")
     _persistant_instances = {}
+    timeout = configurable()
+    slowdown = configurable()
 
     def __init_subclass__(cls, **kwargs):
         if "selector" in cls.__dict__:
@@ -39,7 +71,7 @@ class view(structure):
             if not isinstance(imports, (list, tuple, set)):
                 imports = [imports]
             for i in reversed(imports):
-                views = import_views(i, module)
+                views = import_structures(i, module)
                 for k, v in views.items():
                     setattr(cls, k, v)
 
@@ -77,14 +109,16 @@ class view(structure):
         try:
             return getattr(i, name)
         except Exception as e:
-            raise AttributeError("%r has no attribute %r" % (self, name)) from e
+            raise AttributeError("%r has no attribute %r" % (self, name))
 
     @property
     def text(self):
-        text = self.instance.text
-        if not text:
-            text = self.get_attribute("textContent")
-        return text
+        return self.attr("textContent")
+
+    @property
+    def plain_text(self):
+        clean = self.text.replace("\n", " ").replace("\t", " ")
+        return " ".join(t for t in clean.split(" ") if t)
 
     @property
     def classes(self):
@@ -95,7 +129,7 @@ class view(structure):
             return c.split()
 
     def exists(self):
-        return True
+        return bool(self.instance)
 
     def action(self):
         return Action(self.driver).move_to_element(self.instance)
@@ -108,6 +142,11 @@ class view(structure):
 
     def prop(self, name):
         return self.get_property(name)
+
+    def click(self):
+        script = self._javascript["eventFire"]
+        script += "eventFire(arguments[0], 'click')"
+        self.driver.execute_script(script, self.instance)
 
     def sleep(self, t):
         time.sleep(t)
@@ -124,24 +163,29 @@ class view(structure):
         original = self.driver.get_window_size()
         self.driver.set_window_size(x, y)
         wait(5, lambda : (self.driver.get_window_size() == {"width": x, "height": y}),
-            "failed to resize window to (%s, %s)" % (x, y))
+            "to resize window (%s, %s)" % (x, y))
         try:
             yield
         finally:
             self.driver.set_window_size(original["width"], original["height"])
             wait(5, lambda : (self.driver.get_window_size() == original),
-            "failed to resize window to (%s, %s)" % (original["width"], original["height"]))
+            "to resized window (%s, %s)" % (original["width"], original["height"]))
 
     @property
     def instance(self):
         inst = self._persistant_instances.get(self.selector)
         if inst is None:
+            logger = getLogger(self.__module__)
+            logger.debug("New instance of %s" % self)
             wait = Wait(self.timeout, self.parent)
-            inst = wait.until(self._new_instance, "%r is still "
-                "unavailable after %s seconds." % (self, self.timeout))
+            inst = wait.until(self._new_instance, "%r to be available" % self)
             self._persistant_instances[self.selector] = inst
             inst.location_once_scrolled_into_view
         return inst
+
+    def scroll_to(self):
+        self.instance.location_once_scrolled_into_view
+        return self
 
     @instance.deleter
     def instance(self):
@@ -165,7 +209,11 @@ class view(structure):
             script = 'arguments[0].style.outline = %r' % self.highlight
             self.driver.execute_script(script, instance)
         original_execute = instance._execute
+        instance._scroll_into_view_lock = False
         def _execute(*args, **kwargs):
+            cs = call_string(args, kwargs)
+            logging.debug("%s(%s)" % (self, cs))
+            time.sleep(config.slowdown)
             try:
                 return original_execute(*args, **kwargs)
             except StaleElementReferenceException:
@@ -203,27 +251,8 @@ class field(view):
 
 class button(view):
 
-    click_timeout = 10
-
     def exists(self):
         return self.is_displayed() and self.is_enabled()
-
-    def click(self):
-        # Chrome often shifts elements at the last moment. Thus references
-        # to elements may have stale coordinates that need to be refreshed.
-        Wait(self.click_timeout).until_is(self._clicked, "failed to click %r" % self)
-
-    def _clicked(self):
-        try:
-            self.instance.click()
-        except:
-            if isinstance(self.parent, view):
-                self.parent.refresh()
-            else:
-                self.refresh()
-            raise
-        else:
-            return True
 
 
 class container(view):
@@ -231,7 +260,7 @@ class container(view):
     of = "item"
 
     class item(view):
-        timeout = 0.25
+        timeout = configurable("item_timeout")
         selector = "./*[%s]"
 
     @property
@@ -241,14 +270,21 @@ class container(view):
             yield n
             n += 1
 
+    def refresh(self):
+        del self._list
+        super().refresh()
+
+    @singleton
+    def _list(self):
+        return list(self._iter())
+
     def __getitem__(self, index):
-        item = getattr(self, self.of)
-        if isinstance(item, view):
-            raise TypeError("The selector %r of '%s' is not "
-                "formatable" % (item.selector[1], item))
-        return getattr(self, self.of)(index)
+        return self._list[index]
 
     def __iter__(self):
+        return iter(self._list)
+
+    def _iter(self):
         self.instance
         for x in self.index:
             v = self._getitem(x)
@@ -258,13 +294,17 @@ class container(view):
                 break
 
     def _getitem(self, x):
-        i = self[x]
+        instance = getattr(self, self.of)
+        if isinstance(instance, view):
+            raise TypeError("The selector %r of '%s' is not "
+                "formatable" % (instance.selector[1], instance))
+        item = instance(x)
         try:
-            i.instance
+            item.instance
         except Timeout:
             return None
         else:
-            return i
+            return item
 
 
 class infinite_container(container):
@@ -295,8 +335,7 @@ class infinite_container(container):
         length = (-1, 0)
         while length[0] != length[1]:
             self.load()
-            Wait(self.timeout).until_not(self.loading,
-                "Still loading after %s seconds." % self.timeout)
+            Wait(self.timeout).until_not(self.loading, "loading")
             items = tuple(super().__iter__)
             last = items[-1].instance()
             self._scroll_into_view(last)
@@ -321,9 +360,8 @@ class tree(container):
 
     class item(container):
         selector = "./*[%s]"
-
+        timeout = configurable("item_timeout")
         item = this()
-        timeout = 0.25
 
         def inverse(self):
             return zip(*self)
@@ -335,28 +373,28 @@ class mapping(container):
     maximum = None
 
     def keys(self):
-        return self.map.keys()
+        return self._map.keys()
 
     def values(self):
-        return self.map.values()
+        return self._map.values()
 
     def items(self):
-        return self.map.items()
+        return self._map.items()
 
     def refresh(self):
-        del self.map
+        del self._map
         super().refresh()
 
     @singleton
-    def map(self):
+    def _map(self):
         return {(x.key() if x.key else i) : x
             for i, x in enumerate(self._iter())}
 
     def __getitem__(self, key):
-        return self.map[key]
+        return self._map[key]
 
     def __iter__(self):
-        return iter(self.map)
+        return iter(self._map)
 
     def _iter(self):
         self.instance
@@ -379,7 +417,7 @@ class mapping(container):
     class item(container.item):
 
         def key(self):
-            return self.text
+            return self.plain_text
 
 
 class table(mapping):
@@ -431,22 +469,4 @@ class menu(button, mapping):
             p = self.parent
             if not p.always_displayed and p._displayed:
                 p._enabled = False
-            super().click()
-
-
-def import_views(package, origin=None):
-    if package.startswith("."):
-        if origin is None:
-            frame = inspect.currentframe()
-            g = frame.f_back.f_globals
-            package = g["__name__"] + package
-        else:
-            package = origin + package
-    module = import_module(package)
-    views = {}
-    for name in dir(module):
-        value = getattr(module, name)
-        if inspect.isclass(value) and issubclass(value, view):
-            if value.__module__ == module.__name__:
-                views[name] = value
-    return views
+            self.instance.click()

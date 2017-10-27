@@ -15,6 +15,18 @@ class page(structure):
     pattern = None
     timeout = 15
     redirect = None
+    _structure_source = "url"
+
+    def __init_subclass__(cls, **kwargs):
+        if "imports" in kwargs:
+            module = cls.__module__
+            imports = kwargs["imports"]
+            if not isinstance(imports, (list, tuple, set)):
+                imports = [imports]
+            for i in reversed(imports):
+                views = import_structures(i, module)
+                for k, v in views.items():
+                    setattr(cls, k, v)
 
     def __new__(cls, *args, **kwargs):
         self = new(page, cls, *args, **kwargs)
@@ -61,9 +73,10 @@ class page(structure):
             elif self.pattern.startswith("\.\/"):
                 self.pattern = "./" + self.pattern[4:]
             wait(self.timeout,
-                 lambda : re.match(self.pattern, self.current_url),
-                "Failed to transition from %r to a url matching %r after "
-                "%s seconds" % (self.current_url, self.pattern, self.timeout))
+                 lambda : (
+                    re.match(self.pattern, self.current_url) and self.is_loaded()),
+                "to transition from %r to a url matching %r" %
+                (self.current_url, self.pattern))
             self.url = self.current_url
         else:
             if self.url.startswith("./"):
@@ -76,9 +89,9 @@ class page(structure):
                     if inspect.isclass(value) and issubclass(value, redirect):
                         getattr(self, name).callback()
                         break
-                wait(self.timeout, lambda : self.url == self.current_url,
-                    ("Failed to transition from %r to %r after %s "
-                    "seconds" % (self.current_url, self.url, self.timeout)))
+                wait(self.timeout, lambda : (
+                        self.url == self.current_url and self.is_loaded()),
+                    "to transition from %r to %r" % (self.current_url, self.url))
 
     @contextmanager
     def window_size(self, x, y):
@@ -92,6 +105,9 @@ class page(structure):
         finally:
             self.driver.set_window_size(original["width"], original["height"])
             wait(3, lambda : (self.driver.get_window_size() == original))
+
+    def is_loaded(self):
+        return True
 
     @property
     def size(self):
