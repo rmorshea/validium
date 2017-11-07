@@ -75,6 +75,8 @@ class view(structure):
             return self
 
     def __init__(self, parent):
+        if not isinstance(parent, view) and self.selector == ("xpath", "."):
+            self.selector = ("xpath", "//*")
         parent._children.add(self)
         self.driver = parent.driver
         self._children = WeakSet()
@@ -113,7 +115,12 @@ class view(structure):
             return c.split()
 
     def exists(self):
-        return bool(self.instance)
+        try:
+            self.instance
+        except:
+            return False
+        else:
+            return True
 
     def action(self):
         return Action(self.driver).move_to_element(self.instance)
