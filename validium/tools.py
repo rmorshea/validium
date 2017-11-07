@@ -217,3 +217,31 @@ def new(origin, cls, *args, **kwargs):
         return _new(cls, *args, **kwargs)
     else:
         return _new(cls)
+
+
+def javascript(functions, script):
+    functions = functions.replace(" ", "").split(",")
+    context = "\n".join(_javascript[f] for f in functions)
+    return context + "\n" + script
+
+
+_javascript = {
+    "fireEvent": """
+      function fireEvent(el, etype){
+        if (el.fireEvent) {
+          el.fireEvent('on' + etype);
+        } else {
+          var evObj = document.createEvent('Events');
+          evObj.initEvent(etype, true, false);
+          el.dispatchEvent(evObj);
+        }
+      }
+      """
+}
+
+def chains(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        method(self, *args, **kwargs)
+        return self
+    return wrapper

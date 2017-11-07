@@ -30,12 +30,9 @@ class page(structure):
 
     def __new__(cls, *args, **kwargs):
         self = new(page, cls, *args, **kwargs)
-        if self.url is not None and re.findall("%[\w]", self.url):
-            def __format__(*positional, **keywords):
-                if positional and keywords:
-                    raise ValueError("Expected position "
-                        "or keyword arguments, not both.")
-                self.url = self.url % (positional or keywords)
+        if self.url is not None and re.findall("[^{]{", self.url):
+            def __format__(*a, **kw):
+                self.url = self.url.format(*a, **kw)
                 self.__init__(*args, **kwargs)
                 return self
             return __format__

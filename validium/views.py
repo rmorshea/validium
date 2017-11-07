@@ -39,19 +39,6 @@ def call_string(args, kwargs, form=(lambda i : "%s=%r" % i)):
 
 class view(structure):
 
-    _javascript = {
-        "eventFire": """function eventFire(el, etype){
-              if (el.fireEvent) {
-                el.fireEvent('on' + etype);
-              } else {
-                var evObj = document.createEvent('Events');
-                evObj.initEvent(etype, true, false);
-                el.dispatchEvent(evObj);
-              }
-            }
-            """
-    }
-
     _structure_source = "selector"
     highlight = "solid 1px red"
     selector = ("xpath", ".")
@@ -77,14 +64,10 @@ class view(structure):
 
     def __new__(cls, *args, **kwargs):
         self = new(view, cls, *args, **kwargs)
-        if re.findall("%[\w]", self.selector[1]):
-            def __format__(*positional, **keywords):
-                if positional and keywords:
-                    raise ValueError("Expected position "
-                        "or keyword arguments, not both.")
-                inputs = positional or keywords
+        if re.findall("[^{]{", self.selector[1]):
+            def __format__(*a, **kw):
                 method, selector = self.selector
-                self.selector = (method, selector % inputs)
+                self.selector = (method, selector.format(*a, **kw))
                 self.__init__(*args, **kwargs)
                 return self
             return __format__
@@ -98,22 +81,23 @@ class view(structure):
         self.parent = parent
         self.refresh()
 
+    @chains
     def refresh(self):
         del self.instance
         for c in self._children:
             c.refresh()
-        return self
 
-    def __getattr__(self, name):
-        i = self.instance
-        try:
-            return getattr(i, name)
-        except Exception as e:
-            raise AttributeError("%r has no attribute %r" % (self, name))
+    @chains
+    def sleep(self, t):
+        time.sleep(t)
+
+    @chains
+    def scroll_to(self):
+        self.instance.location_once_scrolled_into_view
 
     @property
     def text(self):
-        return self.attr("textContent")
+        return self.instance.text
 
     @property
     def plain_text(self):
@@ -143,20 +127,9 @@ class view(structure):
     def prop(self, name):
         return self.get_property(name)
 
-    def click(self):
-        script = self._javascript["eventFire"]
-        script += "eventFire(arguments[0], 'click')"
-        self.driver.execute_script(script, self.instance)
-
-    def sleep(self, t):
-        time.sleep(t)
-
-    def __repr__(self):
-        classname, selector = type(self).__name__, self.selector[1]
-        return "%r.%s(%s)" % (self.parent, classname, selector)
-
-    def __str__(self):
-        return "%s.%s" % (self.parent, type(self).__name__)
+    def event(self, etype):
+        script = "fireEvent(arguments[0], %r)" % etype
+        return self._js("fireEvent", script, self.instance)
 
     @contextmanager
     def window_size(self, x, y):
@@ -171,6 +144,24 @@ class view(structure):
             wait(5, lambda : (self.driver.get_window_size() == original),
             "to resized window (%s, %s)" % (original["width"], original["height"]))
 
+    def __getattr__(self, name):
+        i = self.instance
+        try:
+            return getattr(i, name)
+        except Exception as e:
+            raise AttributeError("%r has no attribute %r" % (self, name))
+
+    def __repr__(self):
+        classname, selector = type(self).__name__, self.selector[1]
+        return "%r.%s(%s)" % (self.parent, classname, selector)
+
+    def __str__(self):
+        return "%s.%s" % (self.parent, type(self).__name__)
+
+    def _js(self, functions, script, *args):
+        script = javascript(functions, script)
+        return self.driver.execute_script(script, *args)
+
     @property
     def instance(self):
         inst = self._persistant_instances.get(self.selector)
@@ -182,10 +173,6 @@ class view(structure):
             self._persistant_instances[self.selector] = inst
             inst.location_once_scrolled_into_view
         return inst
-
-    def scroll_to(self):
-        self.instance.location_once_scrolled_into_view
-        return self
 
     @instance.deleter
     def instance(self):
@@ -261,7 +248,7 @@ class container(view):
 
     class item(view):
         timeout = configurable("item_timeout")
-        selector = "./*[%s]"
+        selector = "./*[{}]"
 
     @property
     def index(self):
@@ -359,7 +346,7 @@ class tree(container):
         return zip(*self)
 
     class item(container):
-        selector = "./*[%s]"
+        selector = "./*[{}]"
         timeout = configurable("item_timeout")
         item = this()
 
@@ -425,22 +412,29 @@ class table(mapping):
 
     class row(mapping, mapping.item):
         key = None
-        selector = './tr[%s]'
+        selector = './tr[{}]'
 
         class item(mapping.item):
-            selector = './td[%s]'
+            selector = './td[{}]'
 
 
 class menu(button, mapping):
 
     _displayed = False
     always_displayed = False
+    initially_displayed = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._displayed = cls.initially_displayed
+
+    @chains
     def open(self):
         if not self.always_displayed and not self._displayed:
             self.click()
             self._displayed = True
 
+    @chains
     def close(self):
         if not self.always_displayed and self._displayed:
             self.click()

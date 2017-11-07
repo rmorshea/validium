@@ -14,7 +14,7 @@ class google(page):
         selector = "//*[@id='lst-ib']"
 
         class hints(view):
-            selector = '//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[%s]'
+            selector = '//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[{0}]'
         class go(button):
             selector = '//*[@id="sbtc"]/div[2]/div[2]/div[1]/div/ul/li[(last() - 1)]//input'
 
@@ -30,7 +30,7 @@ class google(page):
 
             class item(mapping.item):
 
-                selector = "(.//*[@class='g']//*[@class='rc'])[%s]"
+                selector = "(.//*[@class='g']//*[@class='rc'])[{0}]"
 
                 class link(button):
                     selector = ".//a"
