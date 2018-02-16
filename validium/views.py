@@ -13,6 +13,7 @@ from selenium.webdriver.common.action_chains import ActionChains as Action
 from . import config
 from .errors import *
 from .tools import *
+from .pages import page
 
 
 __all__ = ["slowdown", "view", "container", "infinite_container",
@@ -64,7 +65,7 @@ class view(structure):
 
     def __new__(cls, *args, **kwargs):
         self = new(view, cls, *args, **kwargs)
-        if re.findall("[^{]{", self.selector[1]):
+        if re.findall(r"[^{]{", self.selector[1]):
             def __format__(*a, **kw):
                 method, selector = self.selector
                 self.selector = (method, selector.format(*a, **kw))
@@ -75,16 +76,32 @@ class view(structure):
             return self
 
     def __init__(self, parent):
+        if hasattr(parent, "transition_to"):
+            parent.transition_to(self)
         if not isinstance(parent, view) and self.selector == ("xpath", "."):
             self.selector = ("xpath", "//*")
+        if isinstance(parent, page):
+            self.page = parent
+        else:
+            self.page = getattr(parent, "page", None)
         parent._children.add(self)
         self.driver = parent.driver
         self._children = WeakSet()
         self.parent = parent
         self.refresh()
+        self.transition_from(parent)
+
+    def transition_to(self, child):
+        pass
+
+    def transition_from(self, parent):
+        pass
 
     @chains
     def refresh(self):
+        p = self.page
+        if p is not None:
+            p._get(redirection=False)
         del self.instance
         for c in self._children:
             c.refresh()
@@ -233,6 +250,18 @@ class field(view):
     def value(self):
         return self.prop("value")
 
+    def send_keys(self, *keys, specials=True):
+        if specials:
+            _keys = []
+            for k in keys:
+                if k.startswith(":") and not k.startswith("::"):
+                    if k.endswith(":") and not k.endswith("::"):
+                        k = getattr(Keys, k[1:-1].upper())
+                _keys.append(k)
+            keys = _keys
+        text = "".join(keys)
+        return self.instance.send_keys(text)
+
     def send_special_keys(self, *keys):
         self.send_keys("".join(getattr(Keys, k.upper()) for k in keys))
 
@@ -251,7 +280,7 @@ class button(view):
 
 class container(view):
 
-    of = "item"
+    holding = "item"
 
     class item(view):
         timeout = configurable("item_timeout")
@@ -288,7 +317,7 @@ class container(view):
                 break
 
     def _getitem(self, x):
-        instance = getattr(self, self.of)
+        instance = getattr(self, self.holding)
         if isinstance(instance, view):
             raise TypeError("The selector %r of '%s' is not "
                 "formatable" % (instance.selector[1], instance))
@@ -406,7 +435,7 @@ class mapping(container):
                     break
 
     def _getitem(self, index):
-        return getattr(self, self.of)(index)
+        return getattr(self, self.holding)(index)
 
     class item(container.item):
 

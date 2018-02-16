@@ -1,3 +1,3 @@
 slowdown = 0
-timeout = 20
+timeout = 200
 item_timeout = 0.2

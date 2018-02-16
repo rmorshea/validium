@@ -119,7 +119,7 @@ def wait(timeout, condition, what, default=Wait.DEFAULT, inverse=False, period=0
     return Wait(timeout).until(condition, what, default, inverse, period)
 
 
-class metastructure(type):
+class meta_structure(type):
 
     def __get__(des, obj, cls):
         if obj is not None:
@@ -137,7 +137,7 @@ class this:
             return cls
 
 
-class structure(metaclass=metastructure):
+class structure(metaclass=meta_structure):
 
     def __init__(self, parent):
         self.parent = parent
